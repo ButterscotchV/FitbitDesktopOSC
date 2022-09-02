@@ -62,7 +62,7 @@ namespace FitbitDesktopOSC
                         }
 
                         for (var i = 0; i < bytesRead; i++)
-                            sw.WriteLine("0x{0} : {1}", (memBasicInfo.BaseAddress + i).ToString("X"), (char)buffer[i]);
+                            sw.Write((char)buffer[i]);
                     }
 
                     // Move to the next memory chunk
