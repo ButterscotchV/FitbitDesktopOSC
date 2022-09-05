@@ -111,7 +111,7 @@ namespace FitbitDesktopOSC
         /// <param name="dwProcessId">The identifier of the local process to be opened.</param>
         /// <returns>If the function succeeds, the return value is an open handle to the specified process. If the function fails, the return value is NULL.</returns>
         [DllImport("kernel32.dll")]
-        public static extern IntPtr OpenProcess([In] uint dwDesiredAccess, [In] bool bInheritHandle, [In] uint dwProcessId);
+        internal static extern IntPtr OpenProcess([In] uint dwDesiredAccess, [In] bool bInheritHandle, [In] uint dwProcessId);
 
         /// <summary>
         /// Closes an open object handle.
@@ -119,7 +119,7 @@ namespace FitbitDesktopOSC
         /// <param name="hObject">A valid handle to an open object.</param>
         /// <returns>If the function succeeds, the return value is nonzero. If the function fails, the return value is 0 (zero).</returns>
         [DllImport("kernel32.dll")]
-        public static extern int CloseHandle([In] IntPtr hObject);
+        internal static extern int CloseHandle([In] IntPtr hObject);
 
         /// <summary>
         /// Reads memory.
@@ -131,14 +131,14 @@ namespace FitbitDesktopOSC
         /// <param name="lpNumberOfBytesRead">The number of bytes read.</param>
         /// <returns>If the function succeeds, the return value is nonzero. If the function fails, the return value is 0 (zero).</returns>
         [DllImport("kernel32.dll", SetLastError = true)]
-        public static extern bool ReadProcessMemory([In] IntPtr hProcess, [In] IntPtr lpBaseAddress, [Out] byte[] lpBuffer, [In] uint dwSize, [Out] out uint lpNumberOfBytesRead);
+        internal static extern bool ReadProcessMemory([In] IntPtr hProcess, [In] IntPtr lpBaseAddress, [Out] byte[] lpBuffer, [In] uint dwSize, [Out] out uint lpNumberOfBytesRead);
 
         /// <summary>
         /// Retrieves information about the current system.
         /// </summary>
         /// <param name="lpSystemInfo">A pointer to a SystemInfo structure that receives the information.</param>
         [DllImport("kernel32.dll")]
-        static extern void GetSystemInfo([Out] out SystemInfo lpSystemInfo);
+        internal static extern void GetSystemInfo([Out] out SystemInfo lpSystemInfo);
 
         /// <summary>
         /// Retrieves information about a range of pages within the virtual address space of a specified process.
@@ -149,7 +149,7 @@ namespace FitbitDesktopOSC
         /// <param name="dwLength">The size of the buffer pointed to by the lpBuffer parameter, in bytes.</param>
         /// <returns>The return value is the actual number of bytes returned in the information buffer. If the function fails, the return value is zero.</returns>
         [DllImport("kernel32.dll", SetLastError = true)]
-        static extern int VirtualQueryEx([In] IntPtr hProcess, [In, Optional] IntPtr lpAddress, [Out] out MemoryBasicInformation lpBuffer, [In] int dwLength);
+        internal static extern int VirtualQueryEx([In] IntPtr hProcess, [In, Optional] IntPtr lpAddress, [Out] out MemoryBasicInformation lpBuffer, [In] int dwLength);
 
         public enum ProcessorArchitecture : ushort
         {
