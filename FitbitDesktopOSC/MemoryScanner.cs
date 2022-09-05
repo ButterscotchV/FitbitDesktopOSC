@@ -25,7 +25,7 @@ namespace FitbitDesktopOSC
         private readonly int processId;
         private readonly IntPtr processHandle;
 
-        private readonly HashSet<IntPtr> targetPtrs = new();
+        private readonly HashSet<IntPtr> targetPointers = new();
 
         private bool disposedValue;
 
@@ -97,17 +97,17 @@ namespace FitbitDesktopOSC
 
         private void AddTargetPointer(IntPtr pointer)
         {
-            lock (targetPtrs)
+            lock (targetPointers)
             {
-                targetPtrs.Add(pointer);
+                targetPointers.Add(pointer);
             }
         }
 
         private void RemoveTargetPointer(IntPtr pointer)
         {
-            lock (targetPtrs)
+            lock (targetPointers)
             {
-                targetPtrs.Remove(pointer);
+                targetPointers.Remove(pointer);
             }
         }
 
@@ -208,7 +208,7 @@ namespace FitbitDesktopOSC
         }
 
         /// <summary>
-        /// Adds matching <seealso cref="IntPtr"/>s to the <seealso cref="List{T}"/> named <see cref="targetPtrs"/>.
+        /// Adds matching <seealso cref="IntPtr"/>s to the <seealso cref="List{T}"/> named <see cref="targetPointers"/>.
         /// </summary>
         /// <param name="region">The memory region to search.</param>
         /// <param name="targetValue">The target pattern to match.</param>
@@ -248,13 +248,13 @@ namespace FitbitDesktopOSC
 
         public void FilterPointers(byte[] targetValue, Action<MemorySearchProgress>? progressCallback = null)
         {
-            lock (targetPtrs)
+            lock (targetPointers)
             {
                 var buffer = ArrayPool<byte>.Shared.Rent(targetValue.Length);
                 try
                 {
-                    var startCount = targetPtrs.Count;
-                    foreach (var pointer in targetPtrs)
+                    var startCount = targetPointers.Count;
+                    foreach (var pointer in targetPointers)
                     {
                         if (!ReadProcessMemory(processHandle, pointer, buffer, (uint)targetValue.Length, out var bytesRead))
                         {
@@ -269,7 +269,7 @@ namespace FitbitDesktopOSC
 
                         progressCallback?.Invoke(new MemorySearchProgress()
                         {
-                            Current = startCount - targetPtrs.Count + 1,
+                            Current = startCount - targetPointers.Count + 1,
                             Total = startCount
                         });
                     }
@@ -373,7 +373,7 @@ namespace FitbitDesktopOSC
 
         public IntPtr[] GetTargetPointers()
         {
-            return targetPtrs.ToArray();
+            return targetPointers.ToArray();
         }
 
         public byte[] ReadPointer(IntPtr pointer, int length, out int bytesRead, byte[]? buffer = null)
@@ -406,7 +406,7 @@ namespace FitbitDesktopOSC
         {
             if (!disposedValue)
             {
-                targetPtrs.Clear();
+                targetPointers.Clear();
                 CloseHandleOrThrow(processHandle);
                 disposedValue = true;
             }
