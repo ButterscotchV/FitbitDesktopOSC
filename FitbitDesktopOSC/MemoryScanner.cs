@@ -1,14 +1,19 @@
+using System;
+using System.Buffers;
 using System.Diagnostics;
+using System.Reflection;
 using System.Runtime.InteropServices;
 
 namespace FitbitDesktopOSC
 {
     public class MemoryScanner : IDisposable
     {
-        const int ProcessQueryInformation = 1024;
-        const int MemCommit = 4096;
-        const int PageReadWrite = 4;
-        const int ProcessWmRead = 16;
+        internal const int ProcessQueryInformation = 1024;
+        internal const int MemCommit = 4096;
+        internal const int PageReadWrite = 4;
+        internal const int ProcessWmRead = 16;
+
+        private static readonly int MemBasicInfoSize = Marshal.SizeOf(default(MemoryBasicInformation));
 
         public readonly IntPtr ProcessMinAddress;
         public readonly long ProcessMinAddressL;
@@ -16,8 +21,12 @@ namespace FitbitDesktopOSC
         public readonly IntPtr ProcessMaxAddress;
         public readonly long ProcessMaxAddressL;
 
+        public readonly long ProcessAddressCount;
+
         private readonly int processId;
         private readonly IntPtr processHandle;
+
+        private readonly List<IntPtr> targetPtrs = new();
 
         private bool disposedValue;
 
@@ -33,9 +42,13 @@ namespace FitbitDesktopOSC
             ProcessMaxAddress = sysInfo.MaximumApplicationAddress;
             ProcessMaxAddressL = (long)sysInfo.MaximumApplicationAddress;
 
+            ProcessAddressCount = ProcessMaxAddressL - ProcessMinAddressL;
+
             processHandle = OpenProcess(ProcessQueryInformation | ProcessWmRead, false, (uint)processId);
             if (processHandle == IntPtr.Zero)
-                throw new InvalidOperationException("The process could not be hooked.");
+            {
+                throw new InvalidOperationException($"The process could not be hooked. Error code: {Marshal.GetLastWin32Error()}");
+            }
         }
 
         public MemoryScanner(Process process) : this(process.Id)
@@ -46,17 +59,16 @@ namespace FitbitDesktopOSC
         {
         }
 
-        public void Something()
+        public void DumpMemory(string file)
         {
-            using var sw = new StreamWriter("dump.txt");
+            using var sw = new StreamWriter(file);
 
             var currentAddress = ProcessMinAddress;
             var currentAddressL = ProcessMinAddressL;
 
-            MemoryBasicInformation memBasicInfo = new MemoryBasicInformation();
             while (currentAddressL < ProcessMaxAddressL)
             {
-                if (VirtualQueryEx(processHandle, currentAddress, out memBasicInfo, Marshal.SizeOf(memBasicInfo)) <= 0)
+                if (VirtualQueryEx(processHandle, currentAddress, out var memBasicInfo, MemBasicInfoSize) <= 0)
                 {
                     throw new Exception($"Failed to find process memory region at {currentAddress}. Error code: {Marshal.GetLastWin32Error()}");
                 }
@@ -80,9 +92,145 @@ namespace FitbitDesktopOSC
                 currentAddress = new IntPtr(currentAddressL);
 
                 var currentValue = currentAddressL - ProcessMinAddressL;
-                var totalValue = ProcessMaxAddressL - ProcessMinAddressL;
-                Console.WriteLine($"{currentValue}/{totalValue} ({currentValue / (double)totalValue:0.00%})");
+                Console.WriteLine($"{currentValue}/{ProcessAddressCount} ({currentValue / (double)ProcessAddressCount:0.00%})");
             }
+        }
+
+        public void ScanMemory(byte[] targetValue, Action<MemorySearchProgress>? progressCallback = null)
+        {
+            var currentAddress = ProcessMinAddress;
+            var currentAddressL = ProcessMinAddressL;
+
+            // Search for regions
+            var regionsInformation = new List<MemoryBasicInformation>();
+            while (currentAddressL < ProcessMaxAddressL)
+            {
+                if (VirtualQueryEx(processHandle, currentAddress, out var memBasicInfo, MemBasicInfoSize) <= 0)
+                {
+                    throw new Exception($"Failed to find process memory region at {currentAddress}. Error code: {Marshal.GetLastWin32Error()}");
+                }
+                var regionSize = memBasicInfo.RegionSize.ToUInt64();
+
+                // If this memory chunk is accessible
+                if (memBasicInfo.Protect == PageReadWrite && memBasicInfo.State == MemCommit && regionSize > 0)
+                {
+                    regionsInformation.Add(memBasicInfo);
+                }
+
+                // Move to the next memory chunk
+                currentAddressL += (long)regionSize;
+                currentAddress = new IntPtr(currentAddressL);
+
+                progressCallback?.Invoke(new MemorySearchProgress()
+                {
+                    Current = currentAddressL - ProcessMinAddressL,
+                    Total = ProcessAddressCount
+                });
+            }
+
+            // Asynchronously search each region
+            var regionSearchTasks = new List<Task>(regionsInformation.Count);
+            foreach (var region in regionsInformation)
+            {
+                regionSearchTasks.Add(Task.Run(() => { ScanMemoryRegion(region, targetValue); }));
+            }
+            Task.WaitAll(regionSearchTasks.ToArray());
+        }
+
+        public void ScanMemory(int targetValue, Action<MemorySearchProgress>? progressCallback = null)
+        {
+            ScanMemory(BitConverter.GetBytes(targetValue), progressCallback);
+        }
+
+        /// <summary>
+        /// Adds matching <seealso cref="IntPtr"/>s to the <seealso cref="List{T}"/> named <see cref="targetPtrs"/>.
+        /// </summary>
+        /// <param name="region">The memory region to search.</param>
+        /// <param name="targetValue">The target pattern to match.</param>
+        private void ScanMemoryRegion(MemoryBasicInformation region, byte[] targetValue)
+        {
+            var regionSize = region.RegionSize.ToUInt64();
+
+            var buffer = ArrayPool<byte>.Shared.Rent((int)regionSize);
+            try
+            {
+                if (!ReadProcessMemory(processHandle, region.BaseAddress, buffer, (uint)regionSize, out var bytesRead))
+                {
+                    throw new Exception($"Failed to read process memory at {region.BaseAddress}. Error code: {Marshal.GetLastWin32Error()}");
+                }
+
+                var offset = 0;
+                // Only search until the bytes cannot possibly match
+                while (offset < bytesRead - targetValue.Length)
+                {
+                    var index = IndexOfBytes(buffer, targetValue, startIndex: offset, length: (int)(bytesRead - offset));
+                    if (index < 0)
+                    {
+                        // Can't find any match, give up
+                        break;
+                    }
+
+                    AddTargetPointer(IntPtr.Add(region.BaseAddress, index));
+
+                    offset = index + 1;
+                }
+            }
+            finally
+            {
+                ArrayPool<byte>.Shared.Return(buffer);
+            }
+        }
+
+        private void AddTargetPointer(IntPtr pointer)
+        {
+            lock (targetPtrs)
+            {
+                targetPtrs.Add(pointer);
+            }
+        }
+
+        private void RemoveTargetPointer(IntPtr pointer)
+        {
+            lock (targetPtrs)
+            {
+                targetPtrs.Remove(pointer);
+            }
+        }
+
+        private void RemoveTargetPointerAt(int index)
+        {
+            lock (targetPtrs)
+            {
+                targetPtrs.RemoveAt(index);
+            }
+        }
+
+        private int IndexOfBytes(byte[] source, byte[] pattern, int startIndex = 0, int length = 0)
+        {
+            var matchLength = 0;
+            for (var i = startIndex; i < startIndex + length; i++ )
+            {
+                if (source[i] == pattern[matchLength])
+                {
+                    matchLength++;
+                }
+                else
+                {
+                    matchLength = 0;
+                }
+
+                if (matchLength >= pattern.Length)
+                {
+                    return i - (matchLength - 1);
+                }
+            }
+
+            return -1;
+        }
+
+        public IntPtr[] GetTargetPointers()
+        {
+            return targetPtrs.ToArray();
         }
 
         private static void CloseHandleOrThrow(IntPtr processHandle, Exception? innerException = null)
@@ -97,6 +245,7 @@ namespace FitbitDesktopOSC
         {
             if (!disposedValue)
             {
+                targetPtrs.Clear();
                 CloseHandleOrThrow(processHandle);
                 disposedValue = true;
             }
@@ -186,6 +335,12 @@ namespace FitbitDesktopOSC
             public uint State;
             public uint Protect;
             public uint Type;
+        }
+
+        public struct MemorySearchProgress
+        {
+            public long Current;
+            public long Total;
         }
     }
 }
