@@ -1,8 +1,7 @@
-using System;
 using System.Buffers;
 using System.Diagnostics;
-using System.Reflection;
 using System.Runtime.InteropServices;
+using System.Text;
 
 namespace FitbitDesktopOSC
 {
@@ -26,7 +25,7 @@ namespace FitbitDesktopOSC
         private readonly int processId;
         private readonly IntPtr processHandle;
 
-        private readonly List<IntPtr> targetPtrs = new();
+        private readonly HashSet<IntPtr> targetPtrs = new();
 
         private bool disposedValue;
 
@@ -96,6 +95,42 @@ namespace FitbitDesktopOSC
             }
         }
 
+        private void AddTargetPointer(IntPtr pointer)
+        {
+            lock (targetPtrs)
+            {
+                targetPtrs.Add(pointer);
+            }
+        }
+
+        private void RemoveTargetPointer(IntPtr pointer)
+        {
+            lock (targetPtrs)
+            {
+                targetPtrs.Remove(pointer);
+            }
+        }
+
+        public static byte[] EnsureEndianness(byte[] value, bool toBigEndian)
+        {
+            if (BitConverter.IsLittleEndian == toBigEndian)
+            {
+                Array.Reverse(value);
+            }
+
+            return value;
+        }
+
+        public static byte[] EnsureEndiannessFrom(byte[] value, bool fromBigEndian)
+        {
+            if (BitConverter.IsLittleEndian == fromBigEndian)
+            {
+                Array.Reverse(value);
+            }
+
+            return value;
+        }
+
         public void ScanMemory(byte[] targetValue, Action<MemorySearchProgress>? progressCallback = null)
         {
             var currentAddress = ProcessMinAddress;
@@ -142,6 +177,36 @@ namespace FitbitDesktopOSC
             ScanMemory(BitConverter.GetBytes(targetValue), progressCallback);
         }
 
+        public void ScanMemoryEnsureEndianness(int targetValue, bool toBigEndian, Action<MemorySearchProgress>? progressCallback = null)
+        {
+            ScanMemory(EnsureEndianness(BitConverter.GetBytes(targetValue), toBigEndian), progressCallback);
+        }
+
+        public void ScanMemory(float targetValue, Action<MemorySearchProgress>? progressCallback = null)
+        {
+            ScanMemory(BitConverter.GetBytes(targetValue), progressCallback);
+        }
+
+        public void ScanMemoryEnsureEndianness(float targetValue, bool toBigEndian, Action<MemorySearchProgress>? progressCallback = null)
+        {
+            ScanMemory(EnsureEndianness(BitConverter.GetBytes(targetValue), toBigEndian), progressCallback);
+        }
+
+        public void ScanMemory(double targetValue, Action<MemorySearchProgress>? progressCallback = null)
+        {
+            ScanMemory(BitConverter.GetBytes(targetValue), progressCallback);
+        }
+
+        public void ScanMemoryEnsureEndianness(double targetValue, bool toBigEndian, Action<MemorySearchProgress>? progressCallback = null)
+        {
+            ScanMemory(EnsureEndianness(BitConverter.GetBytes(targetValue), toBigEndian), progressCallback);
+        }
+
+        public void ScanMemory(string targetValue, Action<MemorySearchProgress>? progressCallback = null)
+        {
+            ScanMemory(Encoding.UTF8.GetBytes(targetValue), progressCallback);
+        }
+
         /// <summary>
         /// Adds matching <seealso cref="IntPtr"/>s to the <seealso cref="List{T}"/> named <see cref="targetPtrs"/>.
         /// </summary>
@@ -181,47 +246,125 @@ namespace FitbitDesktopOSC
             }
         }
 
-        private void AddTargetPointer(IntPtr pointer)
+        public void FilterPointers(byte[] targetValue, Action<MemorySearchProgress>? progressCallback = null)
         {
             lock (targetPtrs)
             {
-                targetPtrs.Add(pointer);
+                var buffer = ArrayPool<byte>.Shared.Rent(targetValue.Length);
+                try
+                {
+                    var startCount = targetPtrs.Count;
+                    foreach (var pointer in targetPtrs)
+                    {
+                        if (!ReadProcessMemory(processHandle, pointer, buffer, (uint)targetValue.Length, out var bytesRead))
+                        {
+                            throw new Exception($"Failed to read process memory at {pointer}. Error code: {Marshal.GetLastWin32Error()}");
+                        }
+
+                        // If it doesn't match, remove it
+                        if (IndexOfBytes(buffer, targetValue, length: (int)bytesRead) < 0)
+                        {
+                            RemoveTargetPointer(pointer);
+                        }
+
+                        progressCallback?.Invoke(new MemorySearchProgress()
+                        {
+                            Current = startCount - targetPtrs.Count + 1,
+                            Total = startCount
+                        });
+                    }
+                }
+                finally
+                {
+                    ArrayPool<byte>.Shared.Return(buffer);
+                }
             }
         }
 
-        private void RemoveTargetPointer(IntPtr pointer)
+        public void FilterPointers(int targetValue, Action<MemorySearchProgress>? progressCallback = null)
         {
-            lock (targetPtrs)
+            FilterPointers(BitConverter.GetBytes(targetValue), progressCallback);
+        }
+
+        public void FilterPointersEnsureEndianness(int targetValue, bool toBigEndian, Action<MemorySearchProgress>? progressCallback = null)
+        {
+            FilterPointers(EnsureEndianness(BitConverter.GetBytes(targetValue), toBigEndian), progressCallback);
+        }
+
+        public void FilterPointers(float targetValue, Action<MemorySearchProgress>? progressCallback = null)
+        {
+            FilterPointers(BitConverter.GetBytes(targetValue), progressCallback);
+        }
+
+        public void FilterPointersEnsureEndianness(float targetValue, bool toBigEndian, Action<MemorySearchProgress>? progressCallback = null)
+        {
+            FilterPointers(EnsureEndianness(BitConverter.GetBytes(targetValue), toBigEndian), progressCallback);
+        }
+
+        public void FilterPointers(double targetValue, Action<MemorySearchProgress>? progressCallback = null)
+        {
+            FilterPointers(BitConverter.GetBytes(targetValue), progressCallback);
+        }
+
+        public void FilterPointersEnsureEndianness(double targetValue, bool toBigEndian, Action<MemorySearchProgress>? progressCallback = null)
+        {
+            FilterPointers(EnsureEndianness(BitConverter.GetBytes(targetValue), toBigEndian), progressCallback);
+        }
+
+        public void FilterPointers(string targetValue, Action<MemorySearchProgress>? progressCallback = null)
+        {
+            FilterPointers(Encoding.UTF8.GetBytes(targetValue), progressCallback);
+        }
+
+        private static int IndexOfBytes(byte[] source, byte[] pattern, int startIndex = 0, int length = -1)
+        {
+            // Fast match weird queries that won't work otherwise (assumed at least length of 1)
+            if (pattern.Length <= 0)
             {
-                targetPtrs.Remove(pointer);
+                // Is this an appropriate result?
+                return startIndex;
             }
-        }
 
-        private void RemoveTargetPointerAt(int index)
-        {
-            lock (targetPtrs)
-            {
-                targetPtrs.RemoveAt(index);
-            }
-        }
+            var endIndex = startIndex + (length >= 0 ? length : source.Length - startIndex);
+            // Calculate the last index needed to search
+            var lastSearchIndex = endIndex - (pattern.Length > 1 ? pattern.Length - 1 : 0);
 
-        private int IndexOfBytes(byte[] source, byte[] pattern, int startIndex = 0, int length = 0)
-        {
+            var possibleMatchStart = -1;
             var matchLength = 0;
-            for (var i = startIndex; i < startIndex + length; i++ )
+            for (var i = startIndex; i < endIndex; i++ )
             {
                 if (source[i] == pattern[matchLength])
                 {
+                    // If during a check and reached a possible start, set the restart index
+                    if (possibleMatchStart < 0 && matchLength > 0 && source[i] == pattern[0])
+                    {
+                        possibleMatchStart = i;
+                    }
                     matchLength++;
-                }
-                else
-                {
-                    matchLength = 0;
-                }
 
-                if (matchLength >= pattern.Length)
+                    // If it's a full match, return the starting index
+                    if (matchLength >= pattern.Length)
+                    {
+                        return i - (matchLength - 1);
+                    }
+                }
+                else if (matchLength > 0)
                 {
-                    return i - (matchLength - 1);
+                    // If we're past the last viable search index, give up
+                    if (i >= lastSearchIndex)
+                    {
+                        break;
+                    }
+
+                    if (possibleMatchStart >= 0)
+                    {
+                        // Skip back to the possible match start, there could be another match within the first
+                        i = possibleMatchStart;
+                    }
+
+                    // Reset state
+                    possibleMatchStart = -1;
+                    matchLength = 0;
                 }
             }
 
@@ -231,6 +374,24 @@ namespace FitbitDesktopOSC
         public IntPtr[] GetTargetPointers()
         {
             return targetPtrs.ToArray();
+        }
+
+        public byte[] ReadPointer(IntPtr pointer, int length, out int bytesRead, byte[]? buffer = null)
+        {
+            var inBuffer = buffer ?? new byte[length];
+
+            if (inBuffer.Length < length)
+            {
+                throw new ArgumentException($"{nameof(buffer)} is too small to fit the requested length.", nameof(buffer));
+            }
+
+            if (!ReadProcessMemory(processHandle, pointer, inBuffer, (uint)length, out var bytesReadU))
+            {
+                throw new Exception($"Failed to read process memory at {pointer}. Error code: {Marshal.GetLastWin32Error()}");
+            }
+            bytesRead = (int)bytesReadU;
+
+            return inBuffer;
         }
 
         private static void CloseHandleOrThrow(IntPtr processHandle, Exception? innerException = null)
@@ -275,8 +436,8 @@ namespace FitbitDesktopOSC
         /// </summary>
         /// <param name="hProcess">The handle to the process.</param>
         /// <param name="lpBaseAddress">The starting address to read.</param>
-        /// <param name="buffer">The byte array to hold the results.</param>
-        /// <param name="size">The number of bytes to read.</param>
+        /// <param name="lpBuffer">The byte array to hold the results.</param>
+        /// <param name="dwSize">The number of bytes to read.</param>
         /// <param name="lpNumberOfBytesRead">The number of bytes read.</param>
         /// <returns>If the function succeeds, the return value is nonzero. If the function fails, the return value is 0 (zero).</returns>
         [DllImport("kernel32.dll", SetLastError = true)]
