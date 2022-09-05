@@ -3,7 +3,7 @@ using System.Runtime.InteropServices;
 
 namespace FitbitDesktopOSC
 {
-    public class MemoryScanner
+    public class MemoryScanner : IDisposable
     {
         const int ProcessQueryInformation = 1024;
         const int MemCommit = 4096;
@@ -16,8 +16,15 @@ namespace FitbitDesktopOSC
         public readonly IntPtr ProcessMaxAddress;
         public readonly long ProcessMaxAddressL;
 
-        public MemoryScanner()
+        private readonly int processId;
+        private readonly IntPtr processHandle;
+
+        private bool disposedValue;
+
+        public MemoryScanner(int processId)
         {
+            this.processId = processId;
+
             GetSystemInfo(out SystemInfo sysInfo);
 
             ProcessMinAddress = sysInfo.MinimumApplicationAddress;
@@ -25,59 +32,75 @@ namespace FitbitDesktopOSC
 
             ProcessMaxAddress = sysInfo.MaximumApplicationAddress;
             ProcessMaxAddressL = (long)sysInfo.MaximumApplicationAddress;
+
+            processHandle = OpenProcess(ProcessQueryInformation | ProcessWmRead, false, (uint)processId);
+            if (processHandle == IntPtr.Zero)
+                throw new InvalidOperationException("The process could not be hooked.");
+        }
+
+        public MemoryScanner(Process process) : this(process.Id)
+        {
+        }
+
+        public MemoryScanner(string processName) : this(Process.GetProcessesByName(processName)[0])
+        {
         }
 
         public void Something()
         {
-            var process = Process.GetProcessesByName("Fitbit")[0];
+            using var sw = new StreamWriter("dump.txt");
 
-            // Open the process with desired access level
-            var processHandle = OpenProcess(ProcessQueryInformation | ProcessWmRead, false, (uint)process.Id);
-            if (processHandle == IntPtr.Zero)
-                throw new InvalidOperationException("The process could not be loaded.");
+            var currentAddress = ProcessMinAddress;
+            var currentAddressL = ProcessMinAddressL;
 
-            try
+            MemoryBasicInformation memBasicInfo = new MemoryBasicInformation();
+            while (currentAddressL < ProcessMaxAddressL)
             {
-                using var sw = new StreamWriter("dump.txt");
-
-                var currentAddress = ProcessMinAddress;
-                var currentAddressL = ProcessMinAddressL;
-
-                MemoryBasicInformation memBasicInfo = new MemoryBasicInformation();
-                while (currentAddressL < ProcessMaxAddressL)
+                if (VirtualQueryEx(processHandle, currentAddress, out memBasicInfo, Marshal.SizeOf(memBasicInfo)) <= 0)
                 {
-                    if (VirtualQueryEx(processHandle, currentAddress, out memBasicInfo, Marshal.SizeOf(memBasicInfo)) <= 0)
-                    {
-                        throw new Exception("Failed to find process memory region at " + currentAddress.ToString() + ". Error code: " + Marshal.GetLastWin32Error().ToString());
-                    }
-                    var regionSize = memBasicInfo.RegionSize.ToUInt64();
-
-                    // If this memory chunk is accessible
-                    if (memBasicInfo.Protect == PageReadWrite && memBasicInfo.State == MemCommit && regionSize > 0)
-                    {
-                        var buffer = new byte[regionSize];
-                        if (!ReadProcessMemory(processHandle, memBasicInfo.BaseAddress, buffer, (uint)regionSize, out var bytesRead))
-                        {
-                            throw new Exception("Failed to read process memory at " + memBasicInfo.BaseAddress.ToString() + ". Error code: " + Marshal.GetLastWin32Error().ToString());
-                        }
-
-                        for (var i = 0; i < bytesRead; i++)
-                            sw.Write((char)buffer[i]);
-                    }
-
-                    // Move to the next memory chunk
-                    currentAddressL += (long)regionSize;
-                    currentAddress = new IntPtr(currentAddressL);
-
-                    var currentValue = currentAddressL - ProcessMinAddressL;
-                    var totalValue = ProcessMaxAddressL - ProcessMinAddressL;
-                    Console.WriteLine($"{currentValue}/{totalValue} ({currentValue / (double)totalValue:0.00%})");
+                    throw new Exception($"Failed to find process memory region at {currentAddress}. Error code: {Marshal.GetLastWin32Error()}");
                 }
+                var regionSize = memBasicInfo.RegionSize.ToUInt64();
+
+                // If this memory chunk is accessible
+                if (memBasicInfo.Protect == PageReadWrite && memBasicInfo.State == MemCommit && regionSize > 0)
+                {
+                    var buffer = new byte[regionSize];
+                    if (!ReadProcessMemory(processHandle, memBasicInfo.BaseAddress, buffer, (uint)regionSize, out var bytesRead))
+                    {
+                        throw new Exception($"Failed to read process memory at {memBasicInfo.BaseAddress}. Error code: {Marshal.GetLastWin32Error()}");
+                    }
+
+                    for (var i = 0; i < bytesRead; i++)
+                        sw.Write((char)buffer[i]);
+                }
+
+                // Move to the next memory chunk
+                currentAddressL += (long)regionSize;
+                currentAddress = new IntPtr(currentAddressL);
+
+                var currentValue = currentAddressL - ProcessMinAddressL;
+                var totalValue = ProcessMaxAddressL - ProcessMinAddressL;
+                Console.WriteLine($"{currentValue}/{totalValue} ({currentValue / (double)totalValue:0.00%})");
             }
-            finally
+        }
+
+        private static void CloseHandleOrThrow(IntPtr processHandle, Exception? innerException = null)
+        {
+            if (CloseHandle(processHandle) == 0)
             {
-                CloseHandle(processHandle);
+                throw new Exception($"Unable to close the process handle {processHandle}. Error code: {Marshal.GetLastWin32Error()}", innerException);
             }
+        }
+
+        public void Dispose()
+        {
+            if (!disposedValue)
+            {
+                CloseHandleOrThrow(processHandle);
+                disposedValue = true;
+            }
+            GC.SuppressFinalize(this);
         }
 
         /// <summary>

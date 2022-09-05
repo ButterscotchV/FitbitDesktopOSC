@@ -1,4 +1,4 @@
 using FitbitDesktopOSC;
 
-var scanner = new MemoryScanner();
+var scanner = new MemoryScanner("Fitbit");
 scanner.Something();
